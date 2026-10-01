@@ -1,0 +1,170 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ============================================
+   Light Theme (default)
+   ============================================ */
+:root {
+  /* ---- Text colors ---- */
+  --clr-text-primary: #0B1120;
+  --clr-text-body: #111111;
+  --clr-text-secondary: #64748B;
+  --clr-text-muted: #94A3B8;
+  --clr-text-on-accent: #FFFFFF;
+  --clr-text-red: #DC2626;
+  --clr-text-green: #16A34A;
+  --clr-text-accent-gold: #C9A253;
+  --clr-text-accent-brown: #473C25;
+
+  /* ---- Backgrounds ---- */
+  --clr-bg-page: #F8FAFC;
+  --clr-bg-page-alt: #F8F9FA;
+  --clr-bg-card: #FFFFFF;
+  --clr-bg-card-hover: #FAFAFA;
+  --clr-bg-subtle: #F1F5F9;
+  --clr-bg-input: #FFFFFF;
+  --clr-bg-sidebar: #FFFFFF;
+  --clr-bg-accent: #0B1120;
+  --clr-bg-accent-hover: #1E293B;
+  --clr-bg-tag: rgba(11, 17, 32, 0.05);
+  --clr-bg-tag-border: rgba(11, 17, 32, 0.1);
+  --clr-bg-red: #FEF2F2;
+  --clr-bg-red-border: #FECACA;
+  --clr-bg-green: #F0FDF4;
+  --clr-bg-main: #e6e6e6;
+
+  /* ---- Borders ---- */
+  --clr-border: #E9ECEF;
+  --clr-border-light: #E5E5E5;
+  --clr-border-accent: #C9A253;
+
+  /* ---- Rings / Focus ---- */
+  --clr-ring: rgba(11, 17, 32, 0.2);
+  --clr-ring-solid: #0B1120;
+}
+
+/* ============================================
+   Dark Theme — applied via .dark class on <html>
+   ============================================ */
+html.dark {
+  --clr-text-primary: #F0F0F0;
+  --clr-text-body: #E8E8E8;
+  --clr-text-secondary: #A0A0A0;
+  --clr-text-muted: #6B6B6B;
+  --clr-text-on-accent: #FFFFFF;
+  --clr-text-red: #FCA5A5;
+  --clr-text-green: #86EFAC;
+  --clr-text-accent-gold: #C9A253;
+  --clr-text-accent-brown: #C9A253;
+
+  --clr-bg-page: #252526;
+  --clr-bg-page-alt: #252526;
+  --clr-bg-card: #2D2D2D;
+  --clr-bg-card-hover: #353535;
+  --clr-bg-subtle: #333333;
+  --clr-bg-input: #2D2D2D;
+  --clr-bg-sidebar: #1E1E1E;
+  --clr-bg-accent: #734934;
+  --clr-bg-accent-hover: #8B5A3E;
+  --clr-bg-tag: rgba(115, 73, 52, 0.15);
+  --clr-bg-tag-border: rgba(115, 73, 52, 0.25);
+  --clr-bg-red: #451A1A;
+  --clr-bg-red-border: #7F1D1D;
+  --clr-bg-green: #14532D;
+  --clr-bg-main: #1E1E1E;
+
+  --clr-border: #3D3D3D;
+  --clr-border-light: #353535;
+  --clr-border-accent: #734934;
+
+  --clr-ring: rgba(115, 73, 52, 0.3);
+  --clr-ring-solid: #734934;
+}
+
+/* ============================================
+   Base styles
+   ============================================ */
+body {
+  background: var(--clr-bg-page);
+  color: var(--clr-text-body);
+  font-family: Arial, Helvetica, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================
+   Animations
+   ============================================ */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fadeIn {
+  /* NOTE: intentionally NO `forwards` fill. With `forwards` the final
+     `transform: translateY(0)` sticks to the element forever, which makes it a
+     containing block for `position: fixed` children — that broke modal
+     centering (modals appeared far down the page). The end state is identical
+     to the default styles, so dropping the fill changes nothing visually. */
+  animation: fadeIn 0.4s ease-out;
+}
+
+/* ============================================
+   Custom Scrollbar
+   ============================================ */
+.custom-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scroll::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 10px;
+}
+
+.custom-scroll::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+html.dark .custom-scroll::-webkit-scrollbar-thumb {
+  background: #555555;
+}
+
+html.dark .custom-scroll::-webkit-scrollbar-thumb:hover {
+  background: #6B6B6B;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #F1F5F9;
+  border-radius: 10px;
+}
+
+html.dark ::-webkit-scrollbar-track {
+  background: #2D2D2D;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 10px;
+}
+
+html.dark ::-webkit-scrollbar-thumb {
+  background: #555555;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: #6B6B6B;
+}
