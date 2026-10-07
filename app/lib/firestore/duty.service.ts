@@ -93,6 +93,17 @@ export const getTasksByDefinition = async (definitionId: string): Promise<DutyTa
     .sort((a, b) => (a.dueDate < b.dueDate ? 1 : a.dueDate > b.dueDate ? -1 : 0));
 };
 
+/** Every task across all crew — powers the live ratings + duty filters on the
+ *  crew-performance list, which needs all members at once rather than one. */
+export const getAllTasks = async (): Promise<DutyTask[]> => {
+  // Plain collection read (no filter) so no composite index is needed.
+  const q = query(collection(db, TASKS), limit(2000));
+  const snap = await getDocs(q);
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() } as DutyTask))
+    .sort((a, b) => (a.dueDate < b.dueDate ? 1 : a.dueDate > b.dueDate ? -1 : 0));
+};
+
 const addTask = async (data: Omit<DutyTask, "id" | "createdAt" | "updatedAt">): Promise<string> => {
   const ref = await addDoc(collection(db, TASKS), {
     ...data,

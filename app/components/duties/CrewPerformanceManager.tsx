@@ -4,8 +4,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useCrewMembers } from "../../lib/hooks/useCrewMembers";
 import { useCrewTasks } from "../../lib/hooks/useCrewTasks";
+import { useAllCrewTasks } from "../../lib/hooks/useAllCrewTasks";
 import { useDutyDefinitions } from "../../lib/hooks/useDutyDefinitions";
-import { DutyTask } from "../../lib/types";
+import { CrewMember, DutyTask } from "../../lib/types";
+import CrewListFilters, {
+  CrewFilterState,
+  EMPTY_CREW_FILTERS,
+  RatingLabel,
+  isFiltered,
+} from "./CrewListFilters";
+import CrewPerformancePrint, { CrewPrintMember } from "./CrewPerformancePrint";
 
 type TierKey = "VERY GOOD" | "GOOD" | "SATISFACTORY" | "POOR";
 type PeriodKey = "MONTH" | "7D" | "30D" | "ALL";
@@ -37,20 +45,116 @@ const shortDate = (iso: string) => {
   return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
 };
 
+/** Lower bound (inclusive) for a period tab — shared by the card and the filters. */
+function periodCutoff(period: PeriodKey): string {
+  if (period === "ALL") return "0000-01-01";
+  if (period === "7D" || period === "30D") {
+    const d = new Date();
+    d.setDate(d.getDate() - PERIODS.find((p) => p.key === period)!.days!);
+    return d.toISOString().slice(0, 10);
+  }
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
+interface CrewStats {
+  rating: RatingLabel;
+  pct: number;
+  total: number;
+  yes: number;
+  excused: number;
+  unexcused: number;
+  rows: DutyTask[];
+}
+
+/** One member's period totals, using the same maths as the KPI badge.
+ *  The reported rating is the EFFECTIVE tier — a manual kpiOverride wins, exactly
+ *  as the badge renders it — so filtering by a label always matches what is shown. */
+function crewStatsOf(tasks: DutyTask[], cutoff: string, override: string | null): CrewStats {
+  const rows = tasks.filter((t) => t.dueDate >= cutoff);
+  const answered = rows.filter((r) => r.completed === "YES" || r.completed === "NO");
+  const yes = rows.filter((r) => r.completed === "YES").length;
+  const excused = rows.filter((r) => r.justification === "EXCUSED").length;
+  const unexcused = rows.filter((r) => r.justification === "UNEXCUSED").length;
+  const pct = answered.length > 0 ? Math.round((yes / answered.length) * 100) : 0;
+  const autoTier = tierOf(pct, unexcused);
+  const rating = ((override as TierKey | null) ?? autoTier) as RatingLabel;
+  return { rating, pct, total: rows.length, yes, excused, unexcused, rows };
+}
+
 export default function CrewPerformanceManager() {
   const { data: crew, refetch: crewRefetch, update: updateCrew } = useCrewMembers();
-  const { ensureRecurring } = useDutyDefinitions();
+  const { data: definitions, ensureRecurring } = useDutyDefinitions();
 
   const onBoard = useMemo(() => crew.filter((c) => c.onBoard), [crew]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [period, setPeriod] = useState<PeriodKey>("MONTH");
+  const [filters, setFilters] = useState<CrewFilterState>(EMPTY_CREW_FILTERS);
+  const [printJob, setPrintJob] = useState<CrewPrintMember[] | null>(null);
 
-  // Default to the first on-board crew member once the roster loads.
-  useEffect(() => {
-    if (onBoard.length && (!selectedId || !onBoard.some((c) => c.id === selectedId))) {
-      setSelectedId(onBoard[0].id!);
+  // All crew's tasks — the left list rates and filters every member, not just
+  // the selected one. The right card still uses useCrewTasks for its editing.
+  const allTasks = useAllCrewTasks();
+  const cutoff = useMemo(() => periodCutoff(period), [period]);
+
+  const tasksByCrew = useMemo(() => {
+    const map = new Map<string, DutyTask[]>();
+    for (const t of allTasks.data) {
+      const list = map.get(t.crewMemberId);
+      if (list) list.push(t);
+      else map.set(t.crewMemberId, [t]);
     }
-  }, [onBoard, selectedId]);
+    return map;
+  }, [allTasks.data]);
+
+  const statsById = useMemo(() => {
+    const map = new Map<string, CrewStats>();
+    for (const c of onBoard) {
+      if (c.id) map.set(c.id, crewStatsOf(tasksByCrew.get(c.id) ?? [], cutoff, c.kpiOverride ?? null));
+    }
+    return map;
+  }, [onBoard, tasksByCrew, cutoff]);
+
+  const orderOptions = useMemo(
+    () => definitions.filter((d) => d.status === "ACTIVE").map((d) => ({ id: d.id!, title: d.title })),
+    [definitions]
+  );
+  const rankOptions = useMemo(
+    () => Array.from(new Set(onBoard.map((c) => c.rank).filter(Boolean))).sort(),
+    [onBoard]
+  );
+  const crewOptions = useMemo(
+    () => onBoard.filter((c) => c.id).map((c) => ({ id: c.id!, name: c.name, rank: c.rank })),
+    [onBoard]
+  );
+
+  // All six filters, AND-combined.
+  const visible = useMemo(() => {
+    const kw = filters.keyword.trim().toLowerCase();
+    const order = filters.orderId ? definitions.find((d) => d.id === filters.orderId) : null;
+    return onBoard.filter((c) => {
+      if (kw && !c.name.toLowerCase().includes(kw)) return false;
+      if (filters.rank && c.rank !== filters.rank) return false;
+      if (filters.rating && statsById.get(c.id!)?.rating !== filters.rating) return false;
+      if (filters.crewMemberId && c.id !== filters.crewMemberId) return false;
+      if (order && !(order.recipientIds ?? []).includes(c.id!)) return false;
+      return true;
+    });
+  }, [onBoard, filters, statsById, definitions]);
+
+  // Keep a valid selection: when the selected member is filtered out, fall to
+  // the first visible one.
+  useEffect(() => {
+    if (visible.length && (!selectedId || !visible.some((c) => c.id === selectedId))) {
+      setSelectedId(visible[0].id!);
+    }
+  }, [visible, selectedId]);
+
+  // A filter combination that matches nobody: the dropdowns keep their values,
+  // the left panel offers a way back, and the card shows a placeholder instead
+  // of the previously selected member. Suppressed while the tasks are loading,
+  // when every rating still reads as POOR.
+  const noMatches = !allTasks.loading && onBoard.length > 0 && visible.length === 0 && isFiltered(filters);
 
   // Materialize due recurring clones once on mount, then reload roster+tasks.
   const booted = useRef(false);
@@ -67,19 +171,39 @@ export default function CrewPerformanceManager() {
   const selectedCrew = onBoard.find((c) => c.id === selectedId) ?? null;
 
   // Period filter
-  const rows: DutyTask[] = useMemo(() => {
-    const cutoff = (() => {
-      if (period === "ALL") return "0000-01-01";
-      if (period === "7D" || period === "30D") {
-        const d = new Date();
-        d.setDate(d.getDate() - PERIODS.find((p) => p.key === period)!.days!);
-        return d.toISOString().slice(0, 10);
-      }
-      const now = new Date();
-      return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
-    })();
-    return tasks.data.filter((t) => t.dueDate >= cutoff);
-  }, [tasks.data, period]);
+  const rows: DutyTask[] = useMemo(
+    () => tasks.data.filter((t) => t.dueDate >= cutoff),
+    [tasks.data, cutoff]
+  );
+
+  const periodLabel = PERIODS.find((p) => p.key === period)!.label;
+  const nameOf = (id: string) => onBoard.find((c) => c.id === id)?.name ?? "—";
+
+  const filterSummary = useMemo(() => {
+    const out: string[] = [];
+    if (filters.keyword.trim()) out.push(`Name contains "${filters.keyword.trim()}"`);
+    if (filters.rank) out.push(`Role: ${filters.rank}`);
+    if (filters.rating) out.push(`Rating: ${filters.rating}`);
+    if (filters.crewMemberId) out.push(`Crew member: ${nameOf(filters.crewMemberId)}`);
+    if (filters.orderId) out.push(`Order: ${definitions.find((d) => d.id === filters.orderId)?.title ?? "—"}`);
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters, onBoard, definitions]);
+
+  const printMemberOf = (c: CrewMember): CrewPrintMember => {
+    const s = statsById.get(c.id!) ?? crewStatsOf([], cutoff, c.kpiOverride ?? null);
+    return {
+      name: c.name,
+      rank: c.rank,
+      ratingLabel: s.rating,
+      pct: s.pct,
+      total: s.total,
+      yes: s.yes,
+      excused: s.excused,
+      unexcused: s.unexcused,
+      rows: s.rows,
+    };
+  };
 
   const answeredRows = rows.filter((r) => r.completed === "YES" || r.completed === "NO");
   const yesCount = rows.filter((r) => r.completed === "YES").length;
@@ -94,15 +218,20 @@ export default function CrewPerformanceManager() {
     await tasks.save(id, patch);
   };
 
+  // The left list's ratings depend only on `completed` and `justification`, so
+  // only those two refresh the whole-crew task set — deliberately NOT in
+  // savePatch, which also backs the per-keystroke remarks input.
   const changeCompleted = async (t: DutyTask, value: "" | "YES" | "NO") => {
     if (value === "YES") await savePatch(t.id!, { completed: "YES", justification: "", approval: "", remarks: "" });
     else if (value === "NO") await savePatch(t.id!, { completed: "NO" });
     else await savePatch(t.id!, { completed: "", justification: "", approval: "", remarks: "" });
+    await allTasks.refetch();
   };
   const changeJustification = async (t: DutyTask, value: "" | "EXCUSED" | "UNEXCUSED") => {
     const patch: Partial<DutyTask> = { justification: value };
     if (value === "EXCUSED") patch.remarks = "";
     await savePatch(t.id!, patch);
+    await allTasks.refetch();
   };
   const setOverride = async (tier: TierKey | null) => {
     if (!selectedId) return;
@@ -121,12 +250,48 @@ export default function CrewPerformanceManager() {
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-6 animate-fadeIn">
+    <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-6 animate-fadeIn">
       {/* ───────────── CREW SELECTOR ───────────── */}
       <aside>
-        <h3 className="text-sm font-bold uppercase tracking-wider text-[var(--clr-text-primary)] mb-3">Engine Crew</h3>
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <h3 className="text-sm font-bold uppercase tracking-wider text-[var(--clr-text-primary)]">Engine Crew</h3>
+          <button
+            type="button"
+            onClick={() => setPrintJob(visible.map(printMemberOf))}
+            disabled={visible.length === 0}
+            title="Print all currently filtered crew members"
+            className="px-2.5 py-1.5 rounded-lg text-[11px] font-mono font-bold border border-[var(--clr-border)] bg-[var(--clr-bg-card)] text-[var(--clr-text-secondary)] hover:text-[var(--clr-text-primary)] hover:bg-[var(--clr-bg-card-hover)] transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap"
+          >
+            🖨 Print All
+          </button>
+        </div>
+
+        <CrewListFilters
+          filters={filters}
+          onChange={setFilters}
+          crewOptions={crewOptions}
+          rankOptions={rankOptions}
+          orderOptions={orderOptions}
+        />
+
+        <p className="mt-3 mb-2 text-[10px] font-mono text-[var(--clr-text-muted)]">
+          {visible.length} of {onBoard.length} shown
+        </p>
+
+        {noMatches && (
+          <p className="mb-2">
+            <button
+              type="button"
+              onClick={() => setFilters(EMPTY_CREW_FILTERS)}
+              className="text-sm font-bold text-[var(--clr-text-accent-gold)] hover:underline cursor-pointer text-left"
+            >
+              Clear filters to see all crew →
+            </button>
+          </p>
+        )}
+
         <div className="space-y-2">
-          {onBoard.map((c) => {
+          {visible.map((c) => {
             const active = c.id === selectedId;
             const ov = (c.kpiOverride as TierKey | null | undefined) ?? null;
             const dotColor = ov ? tierMeta(ov).dot : "bg-slate-300";
@@ -154,6 +319,14 @@ export default function CrewPerformanceManager() {
 
       {/* ───────────── PERFORMANCE CARD ───────────── */}
       <section className="bg-[var(--clr-bg-card)] rounded-2xl border border-[var(--clr-border)] shadow-sm overflow-hidden">
+        {noMatches ? (
+          <div className="py-24 text-center">
+            <div className="text-3xl mb-2">🔍</div>
+            <p className="text-lg font-bold text-[var(--clr-text-primary)]">No Performer</p>
+            <p className="text-sm text-[var(--clr-text-muted)] font-mono mt-1">No crew found for the selected filters.</p>
+          </div>
+        ) : (
+          <>
         {/* Card header + KPI badge + period */}
         <div className="px-6 py-5 border-b border-[var(--clr-border)] flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -171,6 +344,16 @@ export default function CrewPerformanceManager() {
           <div className="flex flex-col items-end gap-2">
             {/* KPI badge + override */}
             <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => selectedCrew && setPrintJob([printMemberOf(selectedCrew)])}
+                disabled={!selectedCrew}
+                title="Print this crew member's performance card"
+                className="px-3 py-2 text-xs font-bold text-[var(--clr-text-secondary)] hover:text-[var(--clr-text-primary)] bg-[var(--clr-bg-subtle)] hover:bg-[var(--clr-bg-card-hover)] border border-[var(--clr-border)] rounded-xl transition cursor-pointer flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                🖨 Print
+              </button>
+
               <div className={`px-4 py-2 rounded-xl border flex items-center gap-2.5 ${tierMeta(effectiveTier).badge}`}>
                 <span className={`w-3 h-3 rounded-full ${tierMeta(effectiveTier).dot}`} />
                 <div>
@@ -328,7 +511,19 @@ export default function CrewPerformanceManager() {
           <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-amber-500" /> Excused delay</span>
           <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-red-500" /> Unexcused / warning</span>
         </div>
+          </>
+        )}
       </section>
+
+      {/* Print document — mounting it triggers the browser print dialog */}
+      {printJob && (
+        <CrewPerformancePrint
+          members={printJob}
+          filterSummary={filterSummary}
+          periodLabel={periodLabel}
+          onClose={() => setPrintJob(null)}
+        />
+      )}
     </div>
   );
 }
