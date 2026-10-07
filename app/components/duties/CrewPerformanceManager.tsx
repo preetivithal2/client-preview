@@ -1,7 +1,7 @@
 "use client";
 
 // CREW PERFORMANCE CARDS — database-backed (Firestore)
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCrewMembers } from "../../lib/hooks/useCrewMembers";
 import { useCrewTasks } from "../../lib/hooks/useCrewTasks";
 import { useAllCrewTasks } from "../../lib/hooks/useAllCrewTasks";
@@ -10,6 +10,7 @@ import { CrewMember, DutyTask } from "../../lib/types";
 import CrewListFilters, {
   CrewFilterState,
   EMPTY_CREW_FILTERS,
+  RATING_OPTIONS,
   RatingLabel,
   isFiltered,
 } from "./CrewListFilters";
@@ -17,6 +18,9 @@ import CrewPerformancePrint, { CrewPrintMember } from "./CrewPerformancePrint";
 
 type TierKey = "VERY GOOD" | "GOOD" | "SATISFACTORY" | "POOR";
 type PeriodKey = "MONTH" | "7D" | "30D" | "ALL";
+
+/** A filter whose own options are computed without it; null = apply them all. */
+type FacetKey = "rank" | "rating" | "crewMemberId" | "orderId" | null;
 
 const TIERS: { key: TierKey; dot: string; badge: string; label: string }[] = [
   { key: "VERY GOOD", dot: "bg-green-500", badge: "bg-green-100 text-green-700 border-green-200", label: "VERY GOOD" },
@@ -90,6 +94,7 @@ export default function CrewPerformanceManager() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [period, setPeriod] = useState<PeriodKey>("MONTH");
   const [filters, setFilters] = useState<CrewFilterState>(EMPTY_CREW_FILTERS);
+  const [crewPickedByHand, setCrewPickedByHand] = useState(false);
   const [printJob, setPrintJob] = useState<CrewPrintMember[] | null>(null);
 
   // All crew's tasks — the left list rates and filters every member, not just
@@ -115,32 +120,81 @@ export default function CrewPerformanceManager() {
     return map;
   }, [onBoard, tasksByCrew, cutoff]);
 
-  const orderOptions = useMemo(
-    () => definitions.filter((d) => d.status === "ACTIVE").map((d) => ({ id: d.id!, title: d.title })),
-    [definitions]
-  );
-  const rankOptions = useMemo(
-    () => Array.from(new Set(onBoard.map((c) => c.rank).filter(Boolean))).sort(),
-    [onBoard]
-  );
-  const crewOptions = useMemo(
-    () => onBoard.filter((c) => c.id).map((c) => ({ id: c.id!, name: c.name, rank: c.rank })),
-    [onBoard]
-  );
-
-  // All six filters, AND-combined.
-  const visible = useMemo(() => {
+  // Search → filter sync, derived rather than stored. When the typed name
+  // matches exactly one crew member that person becomes the crew filter; a
+  // partial name matching several is left alone, so the box still works for
+  // browsing similar names. Null means the dropdown was set by hand and the
+  // search must not overwrite it.
+  const autoCrewId = useMemo(() => {
+    if (crewPickedByHand) return null;
     const kw = filters.keyword.trim().toLowerCase();
-    const order = filters.orderId ? definitions.find((d) => d.id === filters.orderId) : null;
+    if (!kw) return "";
+    const matches = onBoard.filter((c) => c.name.toLowerCase().includes(kw));
+    return matches.length === 1 ? matches[0].id! : "";
+  }, [crewPickedByHand, filters.keyword, onBoard]);
+
+  const effectiveCrewId = autoCrewId ?? filters.crewMemberId;
+
+  const matchingCrew = useCallback((skip: FacetKey) => {
+    const kw = filters.keyword.trim().toLowerCase();
+    const order = filters.orderId ? definitions.find((d) => d.id === filters.orderId) ?? null : null;
     return onBoard.filter((c) => {
       if (kw && !c.name.toLowerCase().includes(kw)) return false;
-      if (filters.rank && c.rank !== filters.rank) return false;
-      if (filters.rating && statsById.get(c.id!)?.rating !== filters.rating) return false;
-      if (filters.crewMemberId && c.id !== filters.crewMemberId) return false;
-      if (order && !(order.recipientIds ?? []).includes(c.id!)) return false;
+      if (skip !== "rank" && filters.rank && c.rank !== filters.rank) return false;
+      if (skip !== "rating" && filters.rating && statsById.get(c.id!)?.rating !== filters.rating) return false;
+      if (skip !== "crewMemberId" && effectiveCrewId && c.id !== effectiveCrewId) return false;
+      if (skip !== "orderId" && order && !(order.recipientIds ?? []).includes(c.id!)) return false;
       return true;
     });
-  }, [onBoard, filters, statsById, definitions]);
+  }, [onBoard, filters, statsById, definitions, effectiveCrewId]);
+
+  // All filters AND-combined — the crew actually shown in the left list.
+  const visible = useMemo(() => matchingCrew(null), [matchingCrew]);
+
+  // Each dropdown is a facet: its options come from the crew matching every
+  // OTHER filter (and always include the current pick). So choosing a value
+  // narrows the other lists without ever deleting its own options, and any
+  // single filter can still be widened without clearing the rest.
+  const rankOptions = useMemo(() => {
+    const set = new Set(matchingCrew("rank").map((c) => c.rank).filter(Boolean));
+    if (filters.rank) set.add(filters.rank);
+    return Array.from(set).sort();
+  }, [matchingCrew, filters.rank]);
+
+  const crewOptions = useMemo(
+    () => matchingCrew("crewMemberId").filter((c) => c.id).map((c) => ({ id: c.id!, name: c.name, rank: c.rank })),
+    [matchingCrew]
+  );
+
+  const ratingOptions = useMemo(() => {
+    const set = new Set(
+      matchingCrew("rating").map((c) => statsById.get(c.id!)?.rating).filter(Boolean) as RatingLabel[]
+    );
+    if (filters.rating) set.add(filters.rating as RatingLabel);
+    return RATING_OPTIONS.filter((r) => set.has(r)); // keep the canonical order
+  }, [matchingCrew, statsById, filters.rating]);
+
+  const orderOptions = useMemo(() => {
+    const ids = new Set(matchingCrew("orderId").map((c) => c.id!));
+    const active = definitions.filter((d) => d.status === "ACTIVE");
+    const list = active
+      .filter((d) => (d.recipientIds ?? []).some((id) => ids.has(id)))
+      .map((d) => ({ id: d.id!, title: d.title }));
+    // Never let the current pick vanish from its own dropdown.
+    if (filters.orderId && !list.some((o) => o.id === filters.orderId)) {
+      const cur = active.find((d) => d.id === filters.orderId);
+      if (cur) list.unshift({ id: cur.id!, title: cur.title });
+    }
+    return list;
+  }, [matchingCrew, definitions, filters.orderId]);
+
+  const applyFilters = (next: CrewFilterState) => {
+    // A hand-picked crew member takes that dropdown off auto; clearing it hands
+    // control back to the search sync. Compared against the effective value,
+    // since that is what the dropdown is actually displaying.
+    if (next.crewMemberId !== effectiveCrewId) setCrewPickedByHand(next.crewMemberId !== "");
+    setFilters(next);
+  };
 
   // Keep a valid selection: when the selected member is filtered out, fall to
   // the first visible one.
@@ -184,11 +238,11 @@ export default function CrewPerformanceManager() {
     if (filters.keyword.trim()) out.push(`Name contains "${filters.keyword.trim()}"`);
     if (filters.rank) out.push(`Role: ${filters.rank}`);
     if (filters.rating) out.push(`Rating: ${filters.rating}`);
-    if (filters.crewMemberId) out.push(`Crew member: ${nameOf(filters.crewMemberId)}`);
+    if (effectiveCrewId) out.push(`Crew member: ${nameOf(effectiveCrewId)}`);
     if (filters.orderId) out.push(`Order: ${definitions.find((d) => d.id === filters.orderId)?.title ?? "—"}`);
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, onBoard, definitions]);
+  }, [filters, onBoard, definitions, effectiveCrewId]);
 
   const printMemberOf = (c: CrewMember): CrewPrintMember => {
     const s = statsById.get(c.id!) ?? crewStatsOf([], cutoff, c.kpiOverride ?? null);
@@ -267,10 +321,11 @@ export default function CrewPerformanceManager() {
         </div>
 
         <CrewListFilters
-          filters={filters}
-          onChange={setFilters}
+          filters={{ ...filters, crewMemberId: effectiveCrewId }}
+          onChange={applyFilters}
           crewOptions={crewOptions}
           rankOptions={rankOptions}
+          ratingOptions={ratingOptions}
           orderOptions={orderOptions}
         />
 
@@ -282,7 +337,7 @@ export default function CrewPerformanceManager() {
           <p className="mb-2">
             <button
               type="button"
-              onClick={() => setFilters(EMPTY_CREW_FILTERS)}
+              onClick={() => { setCrewPickedByHand(false); setFilters(EMPTY_CREW_FILTERS); }}
               className="text-sm font-bold text-[var(--clr-text-accent-gold)] hover:underline cursor-pointer text-left"
             >
               Clear filters to see all crew →
@@ -294,7 +349,17 @@ export default function CrewPerformanceManager() {
           {visible.map((c) => {
             const active = c.id === selectedId;
             const ov = (c.kpiOverride as TierKey | null | undefined) ?? null;
-            const dotColor = ov ? tierMeta(ov).dot : "bg-slate-300";
+            const stats = statsById.get(c.id!);
+            // The dot shows exactly the tier the card badge shows, from the same
+            // maths, so the two can never disagree. Grey is only for "not loaded
+            // yet" / "no stats" — a member with nothing recorded reads as POOR,
+            // because an unanswered period scores 0%, and the badge says POOR too.
+            const dotColor = !allTasks.loading && stats ? tierMeta(stats.rating).dot : "bg-slate-300";
+            const dotTitle = ov
+              ? `${ov} · manual override`
+              : stats
+                ? `${stats.rating} · ${stats.pct}% complete`
+                : "No rating yet";
             return (
               <button key={c.id}
                 onClick={() => setSelectedId(c.id!)}
@@ -309,7 +374,7 @@ export default function CrewPerformanceManager() {
                     <span className="block text-sm font-semibold text-[var(--clr-text-primary)] truncate">{c.name}</span>
                     <span className="block text-[10px] font-mono text-[var(--clr-text-muted)] truncate">{c.rank}</span>
                   </span>
-                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${dotColor}`} title={ov ?? "Auto"} />
+                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${dotColor}`} title={dotTitle} />
                 </div>
               </button>
             );

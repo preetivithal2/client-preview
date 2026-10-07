@@ -10,8 +10,10 @@ import {
   orderBy,
   where,
   limit,
+  startAfter,
   serverTimestamp,
 } from "firebase/firestore";
+import type { QueryDocumentSnapshot } from "firebase/firestore";
 import { db } from "../firebase";
 import { DutyDefinition, DutyFrequency, DutyTask } from "../types";
 
@@ -94,14 +96,29 @@ export const getTasksByDefinition = async (definitionId: string): Promise<DutyTa
 };
 
 /** Every task across all crew — powers the live ratings + duty filters on the
- *  crew-performance list, which needs all members at once rather than one. */
+ *  crew-performance list, which needs all members at once rather than one.
+ *
+ *  Paged to the end rather than capped with a single limit(): an unordered
+ *  limit() returns an arbitrary slice in document-id order, so a cap would
+ *  silently drop whole crew members once the collection outgrows it, and their
+ *  rating dots would read as if they had no data. */
 export const getAllTasks = async (): Promise<DutyTask[]> => {
-  // Plain collection read (no filter) so no composite index is needed.
-  const q = query(collection(db, TASKS), limit(2000));
-  const snap = await getDocs(q);
-  return snap.docs
-    .map((d) => ({ id: d.id, ...d.data() } as DutyTask))
-    .sort((a, b) => (a.dueDate < b.dueDate ? 1 : a.dueDate > b.dueDate ? -1 : 0));
+  const PAGE = 1000;
+  const out: DutyTask[] = [];
+  let cursor: QueryDocumentSnapshot | null = null;
+
+  for (;;) {
+    const base = collection(db, TASKS);
+    const q = cursor
+      ? query(base, orderBy("__name__"), startAfter(cursor), limit(PAGE))
+      : query(base, orderBy("__name__"), limit(PAGE));
+    const snap = await getDocs(q);
+    snap.docs.forEach((d) => out.push({ id: d.id, ...d.data() } as DutyTask));
+    if (snap.size < PAGE) break;
+    cursor = snap.docs[snap.docs.length - 1];
+  }
+
+  return out.sort((a, b) => (a.dueDate < b.dueDate ? 1 : a.dueDate > b.dueDate ? -1 : 0));
 };
 
 const addTask = async (data: Omit<DutyTask, "id" | "createdAt" | "updatedAt">): Promise<string> => {

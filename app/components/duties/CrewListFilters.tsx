@@ -35,6 +35,10 @@ interface Props {
   onChange: (next: CrewFilterState) => void;
   crewOptions: { id: string; name: string; rank: string }[];
   rankOptions: string[];
+  /** Ratings actually present among the crew the other filters allow, in
+   *  RATING_OPTIONS order. Supplied by the parent so the list stays in step
+   *  with the current period and filters. */
+  ratingOptions: RatingLabel[];
   orderOptions: { id: string; title: string }[];
 }
 
@@ -44,7 +48,7 @@ const SELECT_CLS =
 const LABEL_CLS =
   "block text-[10px] font-mono font-semibold text-[var(--clr-text-secondary)] uppercase tracking-widest mb-1";
 
-export default function CrewListFilters({ filters, onChange, crewOptions, rankOptions, orderOptions }: Props) {
+export default function CrewListFilters({ filters, onChange, crewOptions, rankOptions, ratingOptions, orderOptions }: Props) {
   const set = <K extends keyof CrewFilterState>(key: K, value: CrewFilterState[K]) =>
     onChange({ ...filters, [key]: value });
 
@@ -79,7 +83,7 @@ export default function CrewListFilters({ filters, onChange, crewOptions, rankOp
         <label className={LABEL_CLS} htmlFor="cf-rating">Rating</label>
         <select id="cf-rating" value={filters.rating} onChange={(e) => set("rating", e.target.value)} className={SELECT_CLS}>
           <option value="">All ratings</option>
-          {RATING_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+          {ratingOptions.map((r) => <option key={r} value={r}>{r}</option>)}
         </select>
       </div>
 
