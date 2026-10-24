@@ -166,13 +166,10 @@ export default function CrewPerformanceManager() {
     [matchingCrew]
   );
 
-  const ratingOptions = useMemo(() => {
-    const set = new Set(
-      matchingCrew("rating").map((c) => statsById.get(c.id!)?.rating).filter(Boolean) as RatingLabel[]
-    );
-    if (filters.rating) set.add(filters.rating as RatingLabel);
-    return RATING_OPTIONS.filter((r) => set.has(r)); // keep the canonical order
-  }, [matchingCrew, statsById, filters.rating]);
+  // Always offer every tier the rating logic can produce. This used to be
+  // derived from the current crew, so a tier nobody happened to hold (e.g.
+  // GOOD) disappeared from the dropdown. RATING_OPTIONS is the source of truth.
+  const ratingOptions: RatingLabel[] = [...RATING_OPTIONS];
 
   const orderOptions = useMemo(() => {
     const ids = new Set(matchingCrew("orderId").map((c) => c.id!));

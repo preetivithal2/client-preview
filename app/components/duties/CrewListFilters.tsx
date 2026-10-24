@@ -30,6 +30,15 @@ export type RatingLabel = (typeof RATING_OPTIONS)[number];
 export const isFiltered = (f: CrewFilterState): boolean =>
   Object.values(f).some((v) => v !== "");
 
+/** Human-readable labels for the dropdown. The option VALUE stays the exact
+ *  uppercase tier string the filtering logic compares against. */
+const RATING_DISPLAY: Record<RatingLabel, string> = {
+  "VERY GOOD": "Very Good",
+  GOOD: "Good",
+  SATISFACTORY: "Satisfactory",
+  POOR: "Poor",
+};
+
 interface Props {
   filters: CrewFilterState;
   onChange: (next: CrewFilterState) => void;
@@ -83,7 +92,7 @@ export default function CrewListFilters({ filters, onChange, crewOptions, rankOp
         <label className={LABEL_CLS} htmlFor="cf-rating">Rating</label>
         <select id="cf-rating" value={filters.rating} onChange={(e) => set("rating", e.target.value)} className={SELECT_CLS}>
           <option value="">All ratings</option>
-          {ratingOptions.map((r) => <option key={r} value={r}>{r}</option>)}
+          {ratingOptions.map((r) => <option key={r} value={r}>{RATING_DISPLAY[r]}</option>)}
         </select>
       </div>
 
