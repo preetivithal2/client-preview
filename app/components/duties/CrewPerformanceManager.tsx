@@ -15,6 +15,7 @@ import CrewListFilters, {
   isFiltered,
 } from "./CrewListFilters";
 import CrewPerformancePrint, { CrewPrintMember } from "./CrewPerformancePrint";
+import RemarksInput from "./RemarksInput";
 
 type TierKey = "VERY GOOD" | "GOOD" | "SATISFACTORY" | "POOR";
 type PeriodKey = "MONTH" | "7D" | "30D" | "ALL";
@@ -487,7 +488,9 @@ export default function CrewPerformanceManager() {
                   const no = r.completed === "NO";
                   const excused = r.justification === "EXCUSED";
                   const unexcused = r.justification === "UNEXCUSED";
-                  const remarksOpen = unexcused;
+                  // Editable while the absence is unexcused, and always once the
+                  // C/E has approved — approval must never lock the remark field.
+                  const remarksEditable = unexcused || r.approval === "YES";
                   return (
                     <tr key={r.id} className={`transition ${unexcused ? "bg-[var(--clr-bg-red)]" : no ? "bg-amber-50/40" : "hover:bg-[var(--clr-bg-card-hover)]"}`}>
                       <td className="py-3 px-4 font-mono text-xs text-[var(--clr-text-secondary)] whitespace-nowrap">{shortDate(r.dueDate)}</td>
@@ -542,22 +545,27 @@ export default function CrewPerformanceManager() {
                         )}
                       </td>
 
-                      {/* REMARKS — locked unless finalized UNEXCUSED */}
-                      <td className="py-3 px-4">
-                        <input type="text" value={r.remarks} disabled={!remarksOpen}
-                          onChange={(e) => savePatch(r.id!, { remarks: e.target.value })}
-                          placeholder={remarksOpen ? "Log official verbal warning / disciplinary note…" : "—"}
-                          className={`w-full px-3 py-1.5 rounded-lg text-xs border transition ${
-                            remarksOpen ? "bg-white border-red-200 text-red-900 placeholder:text-red-300 focus:ring-2 focus:ring-red-200 font-medium" : "bg-[var(--clr-bg-subtle)] text-[var(--clr-text-muted)] border-transparent cursor-not-allowed"
-                          }`} />
-                        {unexcused && r.completed === "NO" && (
-                          <p className="mt-0.5 text-[9px] font-mono text-red-500">
-                            {r.approval === "NO" ? "⚠ Warning logged — disciplinary note on record" : "Unexcused — set C/E approval"}
-                          </p>
-                        )}
-                        {no && excused && r.approval === "YES" && (
-                          <p className="mt-0.5 text-[9px] font-mono text-amber-600">Excused delay · accepted by C/E</p>
-                        )}
+                      {/* REMARKS — local draft; saved on blur/Enter, never per keystroke */}
+                      <td className="py-3 px-4 align-middle">
+                        <div className="flex w-full min-w-0 max-w-full flex-col justify-center gap-1">
+                          <RemarksInput
+                            // Remount when the stored value changes elsewhere (e.g.
+                            // a justification change clears remarks) so the draft
+                            // never shows stale text.
+                            key={`${r.id}|${r.remarks}`}
+                            initialValue={r.remarks}
+                            editable={remarksEditable}
+                            onSave={(next) => savePatch(r.id!, { remarks: next })}
+                          />
+                          {unexcused && r.completed === "NO" && (
+                            <p className="w-full max-w-full text-[9px] font-mono leading-snug text-red-500 whitespace-normal break-words [overflow-wrap:anywhere]">
+                              {r.approval === "NO" ? "⚠ Warning logged — disciplinary note on record" : "Unexcused — set C/E approval"}
+                            </p>
+                          )}
+                          {no && excused && r.approval === "YES" && (
+                            <p className="w-full max-w-full text-[9px] font-mono leading-snug text-amber-600 whitespace-normal break-words [overflow-wrap:anywhere]">Excused delay · accepted by C/E</p>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
