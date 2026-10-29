@@ -1,7 +1,14 @@
 import { NextRequest } from "next/server";
 import { getProvider } from "../../../lib/ai/getProvider";
 import { TOOL_SCHEMAS, executeTool } from "../../../lib/ai/tools";
-import { PLATFORM_KNOWLEDGE } from "../../../lib/ai/platform-knowledge";
+import { buildChatSystemPrompt } from "../../../lib/ai/system-prompt";
+import {
+  PRIVACY_REFUSAL,
+  TOOL_REFUSAL,
+  detectSensitiveRequest,
+  isReadOnlyTool,
+  sanitizeHistory,
+} from "../../../lib/ai/security";
 import type { ChatMessage, ToolCallResult } from "../../../lib/ai/providers/provider";
 
 function sendSSE(stream: WritableStreamDefaultWriter, event: string, data: any) {
@@ -29,29 +36,8 @@ function isRateLimited(ip: string): boolean {
 
 const TOOL_SCHEMA_TOKENS_ESTIMATE = 1200;
 
-const SYSTEM_PROMPT = `You are Michail, the AI Assistant for the SM Engineer Portal. You help marine engineers with their daily work.
-
-PLATFORM KNOWLEDGE (you know this without searching):
-${PLATFORM_KNOWLEDGE}
-
-CRITICAL RULES:
-1. You have READ-ONLY access to the portal database. You can NEVER create, edit, update, or delete any record — even if the user asks.
-2. To answer questions about data, you MUST use the available tools to search the database. Do not guess or invent data.
-3. NEVER invent counts, records, statistics, or dates. Only report what the tools return.
-4. If a tool returns "No X found", tell the user honestly — do not make anything up.
-5. Use the appropriate tool for the question:
-   - Questions about jobs/repairs/records → search_work_logs or count_records
-   - Questions about equipment → search_equipment
-   - Questions about regulations → list_regulations
-   - Questions about environmental logs → list_environmental_logs
-   - Questions about dropdowns/configurations → get_dropdown
-   - Questions about crew members / who is on board / ranks → list_crew
-   - Questions about Chief Engineer Orders, duties, assigned tasks, daily orders → list_engine_room_duties
-   - Questions about crew performance, rating, completion rate, excused/unexcused entries → get_crew_performance
-   - "how many X" → count_records
-6. If you don't have enough information after calling tools, say so honestly.
-7. Keep answers clear and useful. Use bullet points when helpful.
-8. You also understand maritime terminology (MARPOL, PSC, ECA, ROB, 15ppm, bilge, incinerator, changeover).`;
+/** Built once per server process — the manifest and tool list are static. */
+const SYSTEM_PROMPT = buildChatSystemPrompt();
 
 export async function POST(req: NextRequest) {
   try {
@@ -73,6 +59,12 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Cap the user turn and accept only genuine user/assistant history from the
+    // client. Without this, a caller could inject a fake `system` message and
+    // replace the assistant's security/privacy rules.
+    const userMessage = message.trim().slice(0, 8000);
+    const safeHistory = sanitizeHistory(clientHistory);
+
     const { readable, writable } = new TransformStream();
     const writer = writable.getWriter();
 
@@ -92,6 +84,22 @@ export async function POST(req: NextRequest) {
 
         await sendSSE(writer, "step", { text: "Analyzing your question..." });
 
+        // 1b. Privacy pre-check — refuse obvious secret/personal-data requests
+        // before any model call. The system prompt carries the same policy;
+        // this is defence in depth against prompt injection.
+        if (detectSensitiveRequest(userMessage)) {
+          const completionTokens = Math.round(PRIVACY_REFUSAL.length / 4);
+          await sendSSE(writer, "step", { text: "Generating response..." });
+          await sendSSE(writer, "usage", {
+            promptTokens: 0,
+            completionTokens,
+            totalTokens: completionTokens,
+          });
+          await sendSSE(writer, "token", { text: PRIVACY_REFUSAL });
+          await sendSSE(writer, "done", {});
+          return;
+        }
+
         const provider = getProvider();
         if (!provider.chatWithTools) {
           throw new Error("AI provider does not support tool calling.");
@@ -100,8 +108,8 @@ export async function POST(req: NextRequest) {
         // 2. Build the full message history with tools
         const aiMessages: ChatMessage[] = [
           { role: "system", content: SYSTEM_PROMPT },
-          ...(Array.isArray(clientHistory) ? clientHistory.slice(-30) : []),
-          { role: "user", content: message.trim() },
+          ...safeHistory,
+          { role: "user", content: userMessage },
         ];
 
         // 3. Agent loop — call tools until the AI has enough data to answer
@@ -134,6 +142,11 @@ export async function POST(req: NextRequest) {
               toolResults: [],
             };
             for (const tc of result.toolCalls) {
+              // Enforce the read-only allowlist before touching Firestore.
+              if (!isReadOnlyTool(tc.name)) {
+                currentRound.toolResults.push({ toolCallId: tc.id, result: TOOL_REFUSAL });
+                continue;
+              }
               await sendSSE(writer, "step", { text: `Searching ${tc.name.replace(/_/g, " ")}...` });
               const toolResult = await executeTool(tc.name, tc.args);
               currentRound.toolResults.push({ toolCallId: tc.id, result: toolResult });

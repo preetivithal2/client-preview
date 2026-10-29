@@ -200,6 +200,39 @@ export const TOOL_SCHEMAS = [
   },
 ];
 
+/**
+ * SECURITY — the allowlist is derived from the schemas above.
+ *
+ * Every tool here is READ-ONLY (it only calls getDocs/getCountFromServer/
+ * getDoc). There is deliberately no create, update, delete or dispatch tool.
+ * executeTool refuses any name outside this set, so a model (or a crafted
+ * prompt) cannot reach an undeclared operation.
+ */
+export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set(
+  TOOL_SCHEMAS.map((tool) => tool.function.name)
+);
+
+export const READ_ONLY_REFUSAL =
+  "That action is not available. I have read-only access to the portal and cannot create, edit, delete or dispatch records.";
+
+/**
+ * Fields that must never be queried — even for a count. `count_records`
+ * accepts an arbitrary field name, so without this guard a caller could probe
+ * whether a given email/token exists in a collection.
+ */
+const SENSITIVE_FIELD_NAMES = new Set([
+  "email",
+  "password",
+  "passwd",
+  "apiKey",
+  "api_key",
+  "secret",
+  "token",
+  "accessToken",
+  "refreshToken",
+  "role",
+]);
+
 // ──────────────────────────────────────────────
 // Tool execution — real Firestore queries
 // ──────────────────────────────────────────────
@@ -224,6 +257,11 @@ function formatWorkLog(items: Record<string, any>[]): string {
 }
 
 export async function executeTool(name: string, args: any): Promise<string> {
+  // Defence in depth: never execute a tool that is not in the read-only set.
+  if (!READ_ONLY_TOOL_NAMES.has(name)) {
+    return READ_ONLY_REFUSAL;
+  }
+
   try {
     switch (name) {
       case "search_work_logs": {
@@ -281,6 +319,9 @@ export async function executeTool(name: string, args: any): Promise<string> {
         const collectionName = args.collection as string;
         if (!["workLogs", "equipment", "regulations", "bilgeWaterLogs", "incineratorLogs", "fuelChangeoverLogs", "crewMembers", "dutyDefinitions", "dutyTasks"].includes(collectionName)) {
           return "Unknown collection.";
+        }
+        if (args.field && SENSITIVE_FIELD_NAMES.has(String(args.field))) {
+          return "That field is not available for queries.";
         }
         if (args.field && args.value) {
           // Use EXACT match for accurate counts — not prefix range
